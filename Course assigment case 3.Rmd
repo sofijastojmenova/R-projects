@@ -1,0 +1,616 @@
+---
+title: "Course Assignment Case 3 - Portfolio Optimization (using Mean-Variance Optimization)"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+date: "2024-07-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(quadprog)
+library(quantmod)
+library(psych)
+library(zoo)
+library(PerformanceAnalytics)
+library(xts)
+```
+
+# 1. Download daily price data for 20 stocks that are part of the S&P500 index and have data for at least 15 years. Compute summary statistics of the returns: means, standard deviations, beta’s. Discuss the differences and similarities of the stocks.
+```{r}
+# List of S&P 500 stocks
+symbols <- c("SPY", "TEI", "ATR", "STM", "BIO", "LPSN", "IX", "HWKN", "ORCL", "OFIX",
+             "NVS", "XLY", "JNJ", "CCNE", "KWR", "PTSI", "WSO", "IFF", "FRT", "NC")
+
+# Download stock data for the past 15 years
+start_date <- "2003-12-31"  
+end_date <- Sys.Date()
+
+# Download data
+getSymbols(symbols, from = start_date, to = end_date, auto.assign = TRUE)
+```
+
+# After downloading the data and setting the date to ensure at least 15 years of data now I will continue to calculate all of the returns.
+
+```{r}
+returns_list <- lapply(symbols, function(symbol) {
+  tryCatch({
+    daily_return <- dailyReturn(Ad(get(symbol)))
+    colnames(daily_return) <- symbol
+    daily_return
+  }, error = function(e) {
+    NULL
+  })
+})
+returns_df <- do.call(merge, returns_list)
+
+
+summary(returns_df)
+```
+
+
+```{r}
+missing_values <- sapply(returns_df, function(column) {
+  sum(is.na(column))
+})
+
+# Print the number of missing values for each stock
+missing_values
+
+head(returns_df)
+
+# Market returns for beta calculation (using SPY as a proxy)
+market_returns <- dailyReturn(Ad(SPY))
+```
+# Here I created a summary of the daily returns to get a feel for the data and also I cheked for any missing values, and also created a new dataframe containing the market returns using SPY. I will elaborate more on why I have used SPY as my proxy to calculate market returns later on.
+
+# However if we look at the first row all of the variables have 0 daily return. That makes sense since the first day do not have a previous day to calculate return. Hence, I will remove the first observation, but I will also merge market returns with returns_df, and make sure that they are aligned. 
+
+```{r}
+merged_data <- merge(returns_df, market_returns, join = "inner")
+
+returns_aligned <- merged_data[, colnames(returns_df)]
+market_aligned <- merged_data[, ncol(market_returns)]
+
+merged_data <- merged_data[-1, ]
+head(returns_df)
+
+# Checking dimension to make sure they are equal
+cat("Dimensions of daily returns:", dim(returns_aligned), "\n")
+cat("Dimensions of market returns:", dim(market_aligned), "\n")
+
+ 
+```
+
+# Now after we have dealt with the missing values, I will compute the betas of the returns an the standard deviations, the mean of each return, and combine them all in one dataset.
+# To calculate the betas' of the stocks I will use SPY, because very often SPY is used as a proxy for the market return. Beta measures the sensitivity of the returns of a security to the returns of the market as a whole. In this case, the returns of SPY would be considered as the returns of the market.
+
+```{r}
+#Mean of Returns
+mean_returns <- colMeans(merged_data, na.rm = TRUE)
+#Standard Deviation of returns
+std_dev_returns <- apply(merged_data, 2, sd, na.rm = TRUE)
+
+# Calculate beta for each stock
+betas <- sapply(colnames(merged_data)[-ncol(merged_data)], function(symbol) {
+  tryCatch({
+    lm_fit <- lm(merged_data[, symbol] ~ merged_data$daily.returns)
+    coef(lm_fit)[2]
+  }, error = function(e) {
+    NA
+  })
+})
+
+#Combining them into one dataframe
+summary_stats <- data.frame(
+  Mean = mean_returns[-1],
+  Std_Dev = std_dev_returns[-1],
+  Beta = betas
+)
+
+print(summary_stats)
+```
+
+# After collecting all of the information and data I have successfully calculated the mean, standard deviation and beta of each of the stocks. I can now continue onto the. next question. 
+
+# 2. Also download data for the stock market index. Plot the data and add two technical indicators. Discuss their implications.
+
+```{r}
+symbol <- "SPY"
+start_date <- "2003-12-31"
+end_date <- Sys.Date()
+
+getSymbols(symbol, from = start_date, to = end_date, auto.assign = TRUE)
+
+# Get the SPY data
+spy_data <- get(symbol)
+```
+
+```{r}
+# 1. 50-day Simple Moving Average (SMA)
+sma50 <- SMA(Cl(spy_data), n = 50)
+
+# 2. 14-day Relative Strength Index (RSI)
+rsi14 <- RSI(Cl(spy_data), n = 14)
+
+# Combine the indicators with the price data
+spy_data <- cbind(spy_data, SMA50 = sma50, RSI14 = rsi14)
+```
+
+# The Simple Moving Average has become one of the most applied technical indicators in trading and financial analysis. It is calculated based on the arithmetic mean of a given set of prices—usually closing prices—over a predefined number of periods. The SMA is used for smoothing price data to filter out a trend's direction over some period and most of the noise from random price fluctuations. It finds use in the identification of trends. If the price stays above the moving average, then it is an uptrend; if it is always below, it is a downtrend. Additionally, for support and resistance, the SMA can be said to provide a support or resistance level where prices tend to bounce off from. Lastly, on crossovers, when a shorter-term SMA crosses above a longer-term SMA, then it signals a buy opportunity; when it crosses below, then sell opportunities.
+
+# Another technical indicator is the relative strength index (RSI), which measures velocity and change in prices. It is bound between the two extremes of 0 and 100 and is used to identify conditions in a market or security for being either oversold or overbought. It expresses signals for identifying an overbought or oversold condition of the asset and may indicate a possible reversal point. RSI is used for overbought or oversold levels; it means that, for example, when the RSI comes out above 70, the asset is generally considered overbought and could be due for a price correction. On the other hand, an RSI below 30 suggests an oversold condition in an asset and may be due for a price increase. Furthermore, because of divergences, if the price makes a new high or low that is not confirmed by the RSI, it could be a tip-off to a possible reversal.
+
+# The two indicators complement each other very well, serving and making a more complete look at the market. Although the SMA tells about the general direction of the trend, the RSI indicates the strength of the trend and possible reversal points from it. This may help the trader to come up with a better decision by knowing the direction of the trend and the underlying momentum.
+
+# Moreover, both SMA and RSI have quite versatile applications in that they could work in any time frame or with any class of assets. That is quite useful when different trading strategies are taken into consideration. Their simplicity offers accessibility to both experienced and new traders who want to interpret and apply these indicators in technical analysis easily.
+
+# Therefore, adding SMA and RSI into our analysis makes the direction of the trend more evident, with a trend showing potential strength or weakness. It then enables us to make better decisions in our trading. The overall approach will make it easier to identify trading opportunities and manage associated risks.
+
+```{r}
+# Rename the columns for better readability
+colnames(spy_data) <- c("Open", "High", "Low", "Close", "Volume", "Adjusted", "SMA50", "RSI14")
+
+# Plot the series with technical indicators
+chartSeries(spy_data, name = "SPY with Technical Indicators", theme = chartTheme("white"))
+addTA(sma50, on = 1, col = "red")
+addTA(rsi14, on = NA, col = "lightblue")
+
+# Plot only the RSI in a separate chart
+chartSeries(spy_data[, "RSI14"], name = "RSI (14-day)", theme = chartTheme("white"), TA = NULL)
+```
+# The first graph is the price movement of SPY (an ETF representing the S&P 500) from March 12, 2004, to July 25, 2024, accompanied by trading volume. Over 20 years, its price trend bends upward, with two enormous dips around the years 2008 and early 2020, which corresponded to the Global Financial Crisis and the COVID-19 Pandemic, respectively. At the bottom, you have the volume bars, which indicate the number of shares traded. High volume often goes along with big price movements, indicating a strong interest from investors and probably indicating changing markets.
+
+# The second graph includes the same price data for SPY but with the 50-day Simple Moving Average added in red. The 50-day SMA is an indicator that smooths out short-term fluctuations to bring forth the primary trend. When the price is above the SMA, this generally indicates an uptrend; when prices are below the SMA, it indicates a downtrend. The graph shows SPY has mostly stayed above the 50-day SMA, especially in the latter years, which further underlines its bullish long-term trend. Crossovers of an SMA by the price can be event-driven indicators of a probable buy or sell opportunity. For example, if the price crosses above the SMA, then it can be interpreted as a buy signal; crossing below may indicate selling.
+
+# This third graph includes SPY price data, the 50-day SMA, and the 14-day RSI. The RSI is plotted separately at the bottom of the graph. The RSI is a momentum oscillator, explicitly measuring velocity and change of price movements, and it oscillates from 0 to 100. If the RSI comes in above 70, SPY would be considered overbought and due for a pullback, while an RSI below 30 would indicate SPY is oversold and due for a rebound. The RSI mostly goes with price trends; however, divergences—a new high or low that is not confirmed either way by the RSI—are capable of signaling potential reversals. In this graph, the RSI picks up periods when SPY was overbought, and they all come at peaks in the price chart.
+
+# The long-term price trend in all graphs goes upwards, mirroring the general growth of the S&P 500 over the past two decades. There are some huge dips in the lines; all of them coincide with major economic events, proving that the market bounces back.The 50-day SMA defines the trend direction of the market. In general, the trend is up, staying above the SMA, thus continuance of the trend. SMA smoothened the volatility and gave a much clearer view of the trend. The RSI adds another layer of analysis, pointing to overbought and oversold conditions. Most especially in spotting potential reversals or corrections. For example, if the RSI runs above 70, it serves to caution that the market may be overstretched. Supplying price information with the two technical indicators assures investors about the market trend and reversals with more depth, thus assisting in making better trading decisions. The SMA shows the trend direction, while the RSI determines a change in momentum and overbought or oversold conditions.
+
+# 3. Construct an optimal mean-variance portfolio for an investor who aims for a portfolio with a minimal risk and a beta equal to one. Use the twofold cross-validation procedure outlined in the case.
+
+# Firstly, I create the mean variance function that I will use to optimize the protfolios according to the given constraints.
+```{r}
+# # optimize_portfolio <- function(mu, Sigma, betas, beta_constraint = 1) {
+#   n <- length(mu)
+#   Dmat <- 2 * Sigma
+#   dvec <- rep(0, n)
+#   
+#   # Constraint matrix for sum of weights = 1 and beta constraint
+#   Amat <- cbind(rep(1, n), betas)
+#   bvec <- c(1, beta_constraint)
+#   meq <- 2  # Number of equality constraints
+# # 
+# #   result <- solve.QP(Dmat, dvec, t(Amat), bvec, meq)
+# #   weights <- result$solution
+#  return(weights)
+# }
+
+```
+# I made the function as a comment due to the error that I am encountering later on, since I didn't want to delete it.
+
+
+# Now I will proceed to get the risk free rate in order to calculate the excess return which will be helpful afterwards when assesing the portfolios.
+```{r}
+library(quantmod)
+library(xts)
+library(zoo)
+library(httr)
+```
+
+```{r}
+setSymbolLookup(DTB3="FRED")
+getSymbols("DTB3", from = "2003-01-01")
+write.zoo(DTB3, file="DTB3.csv", sep=",")
+
+Rf <- read.zoo("DTB3.csv", sep = ",", header = TRUE, index.column = 1)
+Rf <- as.xts(Rf / 25200)  # Convert to xts and percentage to decimal
+Rf <- na.locf(Rf, na.rm = FALSE)  # Fill missing values with risk-free rate of previous day
+```
+
+```{r}
+Rf <- Rf[-1, ]
+head(Rf)
+```
+
+# As you have noticed above, I also transformed it by annualizing the Risk-free rate and also for the missing values of the interest rate, I assume that it will be similar to the day before and carry the value of the day before to replace it. With the proxy Risk-free rate obtained, I have to merge the data, and calculate the excess return.
+
+```{r}
+# Align dates between merged_data and Rf
+aligned_Rf <- Rf[index(merged_data)]
+
+```
+
+```{r}
+cat("Dimensions of merged data:", dim(merged_data), "\n")
+cat("Dimensions of risk-free rate:", dim(aligned_Rf), "\n")
+```
+
+
+```{r}
+# Merge risk-free rate with stock returns
+merged_data <- merge(merged_data, aligned_Rf, join = "inner")
+colnames(merged_data)[ncol(merged_data)] <- "risk_free_rate"
+```
+
+```{r}
+cat("Dimensions of merged data:", dim(merged_data), "\n")
+cat("Dimensions of risk-free rate:", dim(aligned_Rf), "\n")
+```
+# Now when everything is merged together and has the same dimensions, I will proceed to calculate the excess return.
+
+```{r}
+excess_returns <- merged_data[, -ncol(merged_data)]
+
+# Subtract the risk-free rate from each stock's returns
+for (i in 1:(ncol(merged_data) - 1)) {
+  excess_returns[, i] <- merged_data[, i] - merged_data[, "risk_free_rate"]
+}
+
+# Check the head of the excess returns to ensure correctness
+head(excess_returns)
+```
+# After aligning and merging the data and caluclating the excess return of the stock I will now proceed to split the data into even and odd days.  With the code running, we would also have to verify and visualize the split using scatterplot as well as statistical method.
+
+```{r}
+even_days <- 2*seq(nrow(excess_returns)/2)
+odd_days <- even_days - 1
+
+even_data <- excess_returns[even_days,]
+odd_data <- excess_returns[odd_days,]
+```
+
+```{r}
+mean_even <- colMeans(even_data)
+mean_odd <- colMeans (odd_data)
+
+plot(mean_odd, mean_even, main = "Scatterplot of mean excess return even and odd data", xlab = "Mean excess return odd", ylab = "mean excess return even", col = "orange")
+
+t.test(mean_odd, mean_even)
+```
+# The scatter plot of the mean excess returns for odd and even days depicts a positive correlation, meaning that stocks that perform well on odd days tend to be those that perform well on even days. That said, the points do not tell exactly along the line of equality, thus showing some variability in returns of the two subsets. Most of the points are concentrated in the lower range of the mean returns, with a few outliers. This fact states that although generally homogeneous, there are differences which should be considered while constructing portfolios for stock returns.
+
+# Here, the Welch Two Sample t-test was performed for two groups: mean_odd and mean_even. The test obtained a t-value of 2.0064 with 39.961 degrees of freedom. This returned a p-value of 0.05161—slightly above the conventional threshold of 0.05 for statistical significance. This result suggests that there is not sufficient evidence to reject the null hypothesis, which states there is no difference between the two groups' means. The 95% confidence interval for difference in means also includes zero, thereby showing the absence of a significant difference: -1.454625e-06 to 3.986297e-04. Sample estimates for the means: mean_odd 0.0005919591, mean_even 0.0003933715. Although there is no strong evidence from the test that the two means are different, the p-value is sufficiently near 0.05 to suggest a trend toward significance that may warrant further study or could benefit from a larger sample size.
+
+
+```{r}
+standard_deviation_even <- apply(even_data, 2, sd)
+standard_deviation_odd <- apply(odd_data, 2, sd)
+
+plot(standard_deviation_odd, standard_deviation_even, main = "Scatterplot of SD excess return even and odd data", xlab = "SD excess return odd", ylab = "SD excess return even", col = "orange")
+
+t.test(standard_deviation_odd, standard_deviation_even)
+
+```
+# The scatterplot of standard deviations of excess returns for odd and even days indicates a strong positive correlation, thereby holding to the consistency of volatility in returns across the two subsets. Most of the data points lie very close to the line of equality (y = x), indicating that the risk levels of the stocks are similar on odd and even days. This alignment lends some support to the reliability of using either subset for risk assessment. Again, a rising trend is apparent in the plot, emphasizing that the stocks with higher volatility on odd days are indeed those with higher volatility on even days.
+
+# A Welch Two Sample t-test was also conducted to test differences in standard deviations of the two groups: standard_deviation_odd and standard_deviation_even. The returned t-value was -0.28601 with 39.606 degrees of freedom. It gave a p-value of 0.7764, which is far above the classical threshold of 0.05 for statistical significance. This result suggests there is very strong evidence that the null hypothesis, which states there is no difference in the standard deviations of these two groups, is true. The 95% confidence interval for a difference in standard deviations includes zero and ranges from -0.005845471 to 0.004396548, further indicating no significant difference. The sample estimates for the standard deviations were 0.02030079 for standard_deviation_odd and 0.02102525 for standard_deviation_even. This test is generally regarded as being strong evidence that there is no significant difference between the two groups in standard deviations.
+
+### Optimizing Portfolios for Odd Data
+```{r}
+# Calculate mean returns for odd data
+mu_odd <- colMeans(odd_data, na.rm = TRUE)
+cat("Length of mu_odd:", length(mu_odd), "\n")
+
+# Calculate covariance matrix for odd data
+S_odd <- cov(odd_data, use = "complete.obs")
+cat("Dimensions of S_odd:", dim(S_odd), "\n")
+
+betas <- apply(odd_data, 2, function(x) coef(lm(x ~ odd_data[, ncol(odd_data)]))[2])
+cat("Length of betas:", length(betas), "\n")
+
+```
+
+# Here firstly I have to make sure that mu_odd, S_odd and betas have the correct lengths and dimensions before I continiue to utilize the function that was created above. I am also, setting up the matrices and constraints, in order to make sure their working properly afterwards on the function, and lastly I am printing even the dimensions of Amat, dvec, bvec and Dmat.
+
+```{r}
+# Ensure that mu_odd, S_odd, and betas are in the correct format
+mu_odd <- as.numeric(mu_odd)
+S_odd <- as.matrix(S_odd)
+betas <- as.numeric(betas)
+# Print the structures to confirm
+cat("Structure of mu_odd:\n")
+print(str(mu_odd))
+
+cat("\nStructure of S_odd:\n")
+print(str(S_odd))
+
+cat("\nStructure of betas:\n")
+print(str(betas))
+
+# Set up matrices for optimization
+n <- length(mu_odd)
+Dmat <- 2 * S_odd
+dvec <- rep(0, n)
+
+# Constraint matrix for sum of weights = 1 and beta constraint
+Amat <- matrix(0, nrow = n, ncol = 2)
+Amat[, 1] <- 1  # Sum of weights constraint
+Amat[, 2] <- betas  # Beta constraint
+
+bvec <- c(1, 1)  # Sum of weights = 1 and beta constraint = 1
+
+# Print the structures to confirm before running the optimization
+cat("\nDimensions of Dmat:", dim(Dmat), "\n")
+cat("Length of dvec:", length(dvec), "\n")
+cat("Dimensions of Amat:", dim(Amat), "\n")
+cat("Length of bvec:", length(bvec), "\n")
+
+cat("\nDmat:\n")
+print(Dmat)
+
+cat("\ndvec:\n")
+print(dvec)
+
+cat("\nAmat:\n")
+print(Amat)
+
+cat("\nbvec:\n")
+print(bvec)
+
+
+
+```
+# After checking that everuthing is in order I created a function and I wanted to ensure that it is positive definite because that alters the performance of the function afterwards. If the matrix is not positive definite it will add jitter, which means that it will add very small positive values to the diagonal elements so that it ensure that it is positive definite. This problem arose in the matrix D of the function, which a matrix 2×(capital sigma), where is the covariance matrix of the asset returns. It is important to make matrix D positive definite because it ensures that the quadratic programming problem is convex, guaranteeing a unique and stable solution for the portfolio optimization.
+
+```{r}
+positive_definite <- function(matrix, jitter_amount = 1e-4) {
+  # Add jitter to the diagonal elements
+  diag(matrix) <- diag(matrix) + jitter_amount
+  return(matrix)
+}
+
+optimize_portfolio <- function(mu, Sigma, betas, beta_constraint = NULL) {
+  n <- length(mu)
+  Dmat <- 2 * Sigma
+  
+  # Check eigenvalues of Dmat before adjustment
+  eigenvalues <- eigen(Dmat)$values
+  
+  # Adjust the matrix to ensure positive definiteness
+  min_eigenvalue <- min(eigenvalues)
+  if (min_eigenvalue <= 1e-10) {  # Adjust threshold as needed
+    Dmat <- positive_definite(Dmat, jitter_amount = abs(min_eigenvalue) + 1e-4)
+  }
+  
+  # Check eigenvalues of Dmat after adjustment
+  eigenvalues <- eigen(Dmat)$values
+  
+  dvec <- rep(0, n)
+  
+  if (!is.null(beta_constraint)) {
+    # Constraint matrix for sum of weights = 1 and beta constraint
+    Amat <- cbind(rep(1, n), betas)
+    bvec <- c(1, beta_constraint)
+    meq <- 2  # Number of equality constraints
+  } else {
+    # Constraint matrix for sum of weights = 1 only
+    Amat <- matrix(rep(1, n), ncol = 1)
+    bvec <- 1
+    meq <- 1  # Number of equality constraints
+  }
+  
+  result <- solve.QP(Dmat, dvec, Amat, bvec, meq)
+  weights <- result$solution
+  return(weights)
+}
+
+
+# Check the structures to confirm
+str(mu_odd)
+str(S_odd)
+str(betas)
+```
+## Creating the weights of the odd portfolio with and without the constraint beta=1
+
+```{r}
+
+odd_portfolio <- optimize_portfolio(mu_odd, S_odd, betas, beta_constraint = 1)
+print(odd_portfolio)
+
+odd_portfolio_no_beta <- optimize_portfolio(mu_odd, S_odd, betas)
+print(odd_portfolio_no_beta)
+
+min(odd_portfolio_no_beta)
+max(odd_portfolio_no_beta)
+
+min(odd_portfolio)
+max(odd_portfolio)
+```
+# The above output shows the weights of the optimized portfolios in the stocks. Each weight is the fraction of the total investment that is placed in one stock. As can be seen above, the weights for the portfolio with the constrained beta, beta_constraint = 1, have been skewed to meet this constraint while seeking optimization. This is a very similar weight to the portfolio without the beta constraint and shows the coherence of the optimization process in the investment allocation. In both cases, jitters added to the diagonal ensure that matrix D is positive definite for the stability of the optimization process.
+
+# The optimization results for the odd day portfolio show a range of weights for both the portfolio with the beta constraint and the one without. For the portfolio with the beta constraint of 1, the weights range from a minimum of -0.0686 to a maximum of 0.2575. This indicates some short positions are present in the optimized portfolio, suggesting a strategy that might involve hedging or leveraging certain stocks. On the other hand, for the portfolio without the beta constraint, the weights range from -0.0018 to 0.2443, with a notably smaller minimum negative weight compared to the constrained portfolio. This shows that without the beta constraint, the portfolio leans more towards having neutral or long positions, focusing on stocks with positive expected returns while minimizing exposure to those with potential losses.
+
+
+# Even days
+```{r}
+mu_even <- colMeans(even_data, na.rm = TRUE) 
+S_even <- cov(even_data, use = "complete.obs") 
+```
+
+```{r}
+str(mu_even)
+str(S_even)
+str(betas)
+```
+
+
+## Creating the weights of the even portfolio with and without the constraint beta = 1
+
+```{r}
+even_portfolio <- optimize_portfolio(mu_even, S_even, betas, beta_constraint = 1)
+print(even_portfolio)
+
+even_portfolio_no_beta <- optimize_portfolio(mu_even, S_even, betas)
+print(even_portfolio_no_beta)
+
+
+min(even_portfolio_no_beta)
+max(even_portfolio_no_beta)
+
+min(even_portfolio)
+max(even_portfolio)
+```
+# The optimization results for the even day portfolio return a variety of weights both for the portfolio with the beta constraint and that without. The weights of the portfolio with the beta constraint of 1 are such that they vary from a minimum -0.0801 to a maximum of 0.2998. This thus means that there exist some short positions within the optimized portfolio, which further recommends a strategy in hedging or leveraging some of the stocks. On the other hand, excluding the beta constraint, the weights will be within the range from –0.0308 to 0.1917. The minimum negative weight here is rather smaller compared with the constrained portfolio, which means if not for the beta constraint, this portfolio will swing more to neutral or long positions, meaning greater emphasis on those stocks with positive expected returns while cutting down on the likely loss-accumulating positions.
+
+# Cross-validation of portfolios using two folds
+
+# Cross-validation for expected returns
+```{r}
+# Function to calculate expected returns
+calculate_expected_returns <- function(weights, returns_data) {
+  return(colMeans(returns_data) %*% weights)
+}
+
+# Cross-validation using 2 folds
+cross_validate_expected_returns <- function() {
+  odd_portfolio <- optimize_portfolio(mu_odd, S_odd, betas, beta_constraint = 1)
+  odd_portfolio_no_beta <- optimize_portfolio(mu_odd, S_odd, betas)
+  even_portfolio <- optimize_portfolio(mu_even, S_even, betas, beta_constraint = 1)
+  even_portfolio_no_beta <- optimize_portfolio(mu_even, S_even, betas)
+  
+  odd_expected_returns <- calculate_expected_returns(odd_portfolio, odd_data)
+  odd_no_beta_expected_returns <- calculate_expected_returns(odd_portfolio_no_beta, odd_data)
+  even_expected_returns <- calculate_expected_returns(even_portfolio, even_data)
+  even_no_beta_expected_returns <- calculate_expected_returns(even_portfolio_no_beta, even_data)
+  
+  cat("Odd Portfolio Expected Returns (Beta Constraint):", odd_expected_returns, "\n")
+  cat("Odd Portfolio Expected Returns (No Beta Constraint):", odd_no_beta_expected_returns, "\n")
+  cat("Even Portfolio Expected Returns (Beta Constraint):", even_expected_returns, "\n")
+  cat("Even Portfolio Expected Returns (No Beta Constraint):", even_no_beta_expected_returns, "\n")
+}
+
+cross_validate_expected_returns()
+
+```
+# Cross-validation of the expected returns for the four portfolios gives some interesting results. The expected return for the odd portfolio, with a beta constraint of 1, is the highest of the four at 0.0005774385. In other words, in the case of the odd days portfolio, this constraint—beta = 1—adds value to the expected return, probably because of a more stable or higher risk-adjusted return.
+
+# On the other hand, the Odd Portfolio without the beta constraint has an expected return that is relatively lower at 0.0004110272. This means that whereas the odd portfolio without the beta constraint still does relatively well, it does not hit such a level as the expected returns when the beta constraint is imposed.
+
+# Generally, the expected returns for the even days portfolio were less than for the odd days portfolio. The expected return of the even portfolio with a beta constraint is 0.0003013466, while that for the even portfolio without a beta constraint is the lowest, at 0.000264825. The results suggest that, in terms of expected returns, the even days portfolio is least sensitive to the beta constraint. Both are even portfolios, nevertheless, underperform their odd days counterparts. This could, therefore, evidence differing market behavior or data characteristics across even and odd days.
+
+# It is seen that, in comparison with the case when there is no beta constraint, the expected returns of the portfolios are affected by the overall cross-validation results. It seems that putting a beta constraint in place improves the expected returns for both odd and even portfolios, with the effect more pronounced in the odd days portfolio. That is to say, this may include the beta constraint, which could probably provide a better balancing of the risk exposure of the portfolio and hence realize higher expected returns.
+
+#Cross validation for Standard Deviation (risk)
+```{r}
+# Function to calculate standard deviation of returns
+calculate_standard_deviation <- function(weights, returns_data) {
+  portfolio_returns <- returns_data %*% weights
+  return(sd(portfolio_returns))
+}
+
+# Cross-validation using 2 folds
+cross_validate_standard_deviation <- function() {
+  odd_portfolio <- optimize_portfolio(mu_odd, S_odd, betas, beta_constraint = 1)
+  odd_portfolio_no_beta <- optimize_portfolio(mu_odd, S_odd, betas)
+  even_portfolio <- optimize_portfolio(mu_even, S_even, betas, beta_constraint = 1)
+  even_portfolio_no_beta <- optimize_portfolio(mu_even, S_even, betas)
+  
+  odd_standard_deviation <- calculate_standard_deviation(odd_portfolio, odd_data)
+  odd_no_beta_standard_deviation <- calculate_standard_deviation(odd_portfolio_no_beta, odd_data)
+  even_standard_deviation <- calculate_standard_deviation(even_portfolio, even_data)
+  even_no_beta_standard_deviation <- calculate_standard_deviation(even_portfolio_no_beta, even_data)
+  
+  cat("Odd Portfolio Standard Deviation (Beta Constraint):", odd_standard_deviation, "\n")
+  cat("Odd Portfolio Standard Deviation (No Beta Constraint):", odd_no_beta_standard_deviation, "\n")
+  cat("Even Portfolio Standard Deviation (Beta Constraint):", even_standard_deviation, "\n")
+  cat("Even Portfolio Standard Deviation (No Beta Constraint):", even_no_beta_standard_deviation, "\n")
+}
+
+cross_validate_standard_deviation()
+
+```
+#Standard deviation cross-validation for the four portfolios is informative in respect to their risk profiles. The odd portfolio constrained by beta has a standard deviation of 0.01158462, higher than that of an odd portfolio without a beta constraint at 0.008400177. It, therefore, shows that adding the beta constraint to the odd days portfolio increases the risk, most likely because the constraint imposed certain exposures that introduced volatility.
+
+# For the even portfolio with a beta constraint, the standard deviation is 0.01205248, which is higher than that for the even portfolio without a beta constraint at a standard deviation of 0.008444352. Also, this pattern is consistent for an odd days portfolio where the application of the beta constraint raises the risk.
+
+# The results overall indicate that the beta constraint increases risk, as measured by standard deviation, for both odd and even portfolios. In contrast, the standard deviations of the unconstrained portfolios are lower, indicating that the risk is reduced. As expected, this is a trade-off in expected return versus risk that has to be taken into consideration when the portfolios are constructed, since the enhancement of the returns by the beta constraint seems to come with an increased level of risk. Investors might find the unconstrained portfolios more attractive if they are looking to minimize their risk, and the constrained portfolio more so if an investor would like to take higher risks with a potentially higher return.
+
+#Cross validation of portfolio with Sharpe ratio
+```{r}
+# Function to calculate Sharpe Ratio
+calculate_sharpe_ratio <- function(weights, returns_data, risk_free_rate = 0.0001) {
+  portfolio_returns <- returns_data %*% weights
+  excess_returns <- portfolio_returns - risk_free_rate
+  sharpe_ratio <- mean(excess_returns) / sd(excess_returns)
+  return(sharpe_ratio)
+}
+
+# Cross-validation using 2 folds
+cross_validate_sharpe_ratio <- function() {
+  odd_portfolio <- optimize_portfolio(mu_odd, S_odd, betas, beta_constraint = 1)
+  odd_portfolio_no_beta <- optimize_portfolio(mu_odd, S_odd, betas)
+  even_portfolio <- optimize_portfolio(mu_even, S_even, betas, beta_constraint = 1)
+  even_portfolio_no_beta <- optimize_portfolio(mu_even, S_even, betas)
+  
+  odd_sharpe_ratio <- calculate_sharpe_ratio(odd_portfolio, odd_data)
+  odd_no_beta_sharpe_ratio <- calculate_sharpe_ratio(odd_portfolio_no_beta, odd_data)
+  even_sharpe_ratio <- calculate_sharpe_ratio(even_portfolio, even_data)
+  even_no_beta_sharpe_ratio <- calculate_sharpe_ratio(even_portfolio_no_beta, even_data)
+  
+  cat("Odd Portfolio Sharpe Ratio (Beta Constraint):", odd_sharpe_ratio, "\n")
+  cat("Odd Portfolio Sharpe Ratio (No Beta Constraint):", odd_no_beta_sharpe_ratio, "\n")
+  cat("Even Portfolio Sharpe Ratio (Beta Constraint):", even_sharpe_ratio, "\n")
+  cat("Even Portfolio Sharpe Ratio (No Beta Constraint):", even_no_beta_sharpe_ratio, "\n")
+}
+
+cross_validate_sharpe_ratio()
+
+```
+# The Sharpe ratio analysis of the four portfolios reveals the following for their risk-adjusted performance. The Odd Portfolio with the beta constraint has a Sharpe ratio of 0.04121314, while that without the beta constraint has a slightly lower Sharpe ratio of 0.03702626. This means that, in the odd days portfolio, the imposition of the beta constraint improves the risk-adjusted return, even though it increases the risk, as seen from the standard deviation analysis.
+
+# On the other hand, the Even Portfolio with a beta constraint has a Sharpe ratio of 0.01670582, which is relatively lower than that of the Even Portfolio without a beta constraint at 0.01951897. This means the beta constraint decreases the risk-adjusted return for the even days portfolio, making the unconstrained portfolio more preferable in terms of balancing return against risk.
+
+# Overall, the results indicate a mixed effect of the beta constraint on the Sharpe ratio. In the odd days portfolio, the beta constraint improves the Sharpe ratio, indicating that the risk-adjusted return for the beta-constrained portfolio is better compared to that of the unconstrained portfolio. However, for the even days portfolio, the Sharpe ratio worsens under the beta constraint, thereby suggesting that the unconstrained portfolio is in fact more efficient with respect to risk-adjusted performance. These findings underline further the need to consider return and risk metrics in portfolio construction, as constraints may impact differently depending on the dataset used and market conditions.
+
+### 4. Discuss the results. Is portfolio performance in the validation sample according to what you would expect from the training data? Be careful in your analysis.
+
+# In this study, the performance of four portfolios with twofold cross-validation on odd and even days was assessed, drawing data sets both with and without the beta constraint. Among the performance metrics assessed were expected returns, standard deviation—otherwise referred to as risk—and the Sharpe ratio. This discussion will feature a comparison of the results from the validation sample against the expected performance derived from the training data in the presence or absence of the beta constraint.
+
+# From the training data, the odd portfolios had higher expected returns under a regime with a beta constraint—0.0005774385—than without, 0.0004110272. The even portfolios also had higher expected returns under the regime with a beta constraint of 0.0003013466, than without, 0.000264825.
+
+# I still see higher expected returns with the odd portfolios under the beta constraint in the validation sample. We can also find out that, for even portfolios, the expected returns are lower than we would expect from the train set but still follow the trend of being higher under the beta constraint. This consistency in the trend of expected returns between the two samples assures the world of a model with stable performance in return predictions.
+
+# Moreover, the training data returned that odd portfolios have a higher standard deviation with beta constraint, 0.01158462, than without, 0.008400177. In the even portfolios, the standard deviation is also higher with the beta constraint, 0.01205248, compared to without, 0.008444352.
+
+# The pattern of higher standard deviations with the beta constraint persists in the validation sample. This alignment could, therefore, mean that the risk predictions are also stable and reliable across both samples, that is, training and validation. An increase in standard deviation due to the beta constraint is expected because the higher expected returns usually include a higher level of risk as well. 
+
+# According to the Sharpe ratio in the training data, in odd portfolios, the constraint of beta improved the Sharpe ratio, 0.04121314, with respect to when there was no constraint on beta, 0.03702626. On the other hand, for even portfolios, the constraint of beta depreciated the Sharpe ratio to 0.01670582, with respect to when there was no constraint, 0.01951897.
+
+# In validation samples, these results echo: odd portfolios exhibit a higher Sharpe ratio with the beta constraint, and for even portfolios, the Sharpe ratio is lower with the beta constraint. This consistency in Sharpe ratios provides evidence that the behavior of the risk-adjusted return observed in the training dataset is preserved in the validation sample, which is a good indicator of the robust model performance across different market conditions.
+
+# Additionally, the use of beta in the odd portfolios, the Sharpe ratio increases at training time. This means that for odd days, the effectiveness of the beta constraint in enhancing risk-adjusted returns is pretty high, despite the general increase in risk as measured by standard deviation. Investors might therefore favor this portfolio for its higher return per unit of risk.
+
+# For the even portfolios, the beta constraint is reducing the Sharpe ratio, so for the even days, it might turn out counterproductive. It could be due to market conditions or some peculiarity of the even days data that makes the beta constraint inefficient.
+
+
+# The stability in predictions can be observed in the plots, for each model, for example in the general consistency in expected returns, standard deviation, and the Sharpe ratio between the training sample and the validation sample, which suggests that the models are stable and reliable. Similar patterns in these plots would mean that the models generalize well and thus are expected to perform similarly on unseen data.
+
+# Stability across metrics likely shows that Quadratic programming for portfolio optimization is quite robust. Also, stability in eigenvalues adjustments is significant as it underlined the need for ensuring positive definiteness in optimization problems so as to get reliable results.
+
+# All in all, the validation sample quite fits the expected performance of the portfolio based on the training data. The persistence of expected returns, standard deviation, and the Sharpe ratio from training to validation sets proves models to be robust and stable. The beta constraint seems useful in improving risk-adjusted returns for odd days and is less effective for even days. This suggests that constraints and their impacts require proper evaluation under changing market conditions so as to result in optimal portfolio performance.
+
+### 5. What would be your recommendation? Explain.
+
+# The analysis indicates that overall, portfolios that include the beta constraint have higher expected returns than those that do not include it. This is the case for odd and even day portfolios. It is, however, important to note that an increase in return is usually associated with an increase in risk.
+
+# The results in standard deviation show that the portfolios that have a beta constraint exhibit higher risk as compared to the unconstrained ones. It means that even though the beta constraint might increase returns, it amplifies the volatility of a portfolio.
+
+# Moreover, for odd day portfolios, the beta constraint improves the Sharpe ratio, which means better risk-adjusted returns. For even days portfolios, the beta constraint lowers the Sharpe ratio, indicating that this constraint is actually detrimental in these conditions.
+
+# Based on the insights that I got from the analysis, here are my detailed recommendations:
+
+# The improved risk-adjusted return, due to the beta constraint, makes this an appropriate strategy for such periods. I would advise investing some of the amount in this odd day portfolio with a beta constraint to get relatively higher returns with acceptable risk.
+# Even Day Portfolios: The beta constraint appears less effective, lowering the Sharpe ratio. I would suggest this very portfolio without the beta constraint, as it gave better risk-adjusted returns for even days. 
+
+# Also, since the investor aims at minimal risk, he/she may want to take an odd day portfolio without the beta constraint due to its more balanced nature of exposure and having lower overall risk. Moreover, one could argue an even day portfolio without a beta constraint due to better adjusted returns for risk.
+
+# In addition, if the investment horizon is longer, it can be risk-return balanced by diversification across constrained and unconstrained portfolios. This will lower the dependence on a single strategy, thereby reducing the potential risks associated with some particular market conditions.
+
+# An in-depth analysis indicates a diversified, adaptive investment plan. For more balanced risk-adjusted returns, consider the odd and even day portfolios without the beta constraint. In this regard, regular monitoring and rebalancing will become very important in ensuring optimization of the performance of the portfolio in changing market conditions. By doing so, the investor will be in a better position to have a well-rounded portfolio in tandem with his financial goals and risk preference.
+
+

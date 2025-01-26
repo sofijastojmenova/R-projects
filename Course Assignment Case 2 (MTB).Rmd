@@ -1,0 +1,386 @@
+---
+title: "course assignment Case 2 (Predicting Market to Book Ratio - MTB)"
+output:
+  html_document:
+    df_print: paged
+date: "2024-07-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(class)
+library(caret)
+library(kknn)
+library(rpart)
+library(rpart.plot)
+```
+
+# Consider case 2 from the course. You will find the case description on the course page. The case asks for data cleaning and building a model for the PE ratio. Instead of the PE ratio you are asked to build a model for the Market-to-Book (MTB) ratio using the same predictor variables as for the PE-ratio in the case.
+
+```{r}
+compusat <- read.csv("/Users/sofijastojmenova/Desktop/compu.csv")
+```
+
+```{r}
+main_data <-  compusat %>%
+  filter(at > 0, csho > 0, !is.na(ni)) # Using only observations with at and csho > 0 to avoid creating infinite values in variables of interest, removing NA values for ni
+
+
+main_data <- main_data %>%
+  mutate(
+    xint = ifelse(is.na(main_data$xint), 0, main_data$xint), # NA values in xint variable will be assumed as 0
+    lag_assets = lag(at),
+    lag_ni = lag(ni),
+    lag2_ni = lag(lag(ni)),
+    price = ifelse(is.na(prcc_c), prcc_f, prcc_c), # If there are no prcc_c, then use prcc_f instead.
+    book_value = coalesce(ceq, at - lt, bkvlps * csho),
+    market_value = csho * price
+  ) 
+
+main_data <- main_data %>%
+  mutate(
+    MTB  = market_value / book_value,
+    size = log(at),
+    EPS = ni / csho,
+    EPS1 = lag_ni / csho,
+    EPS2 = lag2_ni / csho,
+    PE = ifelse(EPS + EPS1 + EPS2 > 0, log(((price) *3) / (EPS + EPS1 + EPS2)), 
+                ifelse(EPS > 0, log(price/EPS),
+                       ifelse(EPS1 > 0, log(price/EPS1), 
+                              ifelse(EPS2 > 0, log(price/EPS2), NA)))), # Ensuring that PE is not calculated with negative EPS values, which will create NaNs
+    inv = size - lag(size),
+    ROA = (ni + xint) / at,
+    ROE = ni / book_value
+  )  
+```
+
+### Perform the data cleaning for the year 2017, and comment on the steps you take using the questions in Part 1 of the case.
+
+```{r}
+filtered_data1 <- main_data %>%
+  select(MTB, size, EPS, PE, inv, ROA, ROE, fyear, market_value) %>%
+  filter(fyear == 2017, market_value > 1000) 
+```
+# For the first step of data cleaning, I filtered the year of interest, which is 2017. Small firms are very different and can have a large impact on corporate finance data, thus I decided to create a logical threshold to filter the firms. The threshold is 1000, where only observations with market value higher than 1000 will be used as data. Also,I am only cleaning the data for our variables of interest (MTB, size, EPS, price, PE, inv, ROA, ROE), so the filtered dataset for 2017 will only contain these variables. Now that the data ha filtered the year, eliminated smaller firms and choosing the variables of interest, we can proceed with data cleaning of this dataset.
+
+```{r}
+length(which(is.na(filtered_data1)))
+```
+# Firstly, I am checking for missing values in order to see what we are dealing with, and we can see that we have 214 missing values. 
+
+```{r}
+summary(filtered_data1)
+```
+# To locate the missing variables we can see that we have only for the PE variable, which makes sense since it is dependent on the variables EPS, EPS1, and EPS2 as the denominator of the equation for log, so if all three variables are negative, it can not be calculated and it is converted it into NA. With that in mind, I will omit observations with missing(NA) PE values:
+
+```{r}
+filtered_data1 <- filtered_data1 %>%
+  na.omit(pe)
+summary(filtered_data1)
+```
+# With NA values for the variable PE omitted, the filtered data for 2017 have no missing values anymore for the variables of interest. With missing values dealt with, I can proceed to deal with potential outliers. 
+
+# It is necessary to first visualize whether variables have outliers before we can address them. I will use boxplots for visualization in order to do this. Variables that are greater than 1.5 times the upper quartile (75% of data) or lower than 1.5 times the lower quartile (25% of data) are regarded as outliers in boxplots, which identify outliers using the upper and lower bounds of their IQR. Hence, the IQR is the logical boundary of outliers for boxplots, which we use as our visualizers. We will be locating and handling any outliers of any of the variables in this dataset. However, we will only be recognizing and addressing the outliers of our independent variables when we create our model later on.
+
+```{r}
+boxplot(filtered_data1$MTB, main = "Boxplot of MTB", col = "hotpink")
+boxplot(filtered_data1$size, main = "Boxplot of size", col = "hotpink")
+boxplot(filtered_data1$EPS, main = "Boxplot of EPS", col = "hotpink")
+boxplot(filtered_data1$PE, main = "Boxplot of PE", col = "hotpink")
+boxplot(filtered_data1$inv, main = "Boxplot of inv", col = "hotpink")
+boxplot(filtered_data1$ROA, main = "Boxplot of ROA", col = "hotpink")
+boxplot(filtered_data1$ROE, main = "Boxplot of ROE", col = "hotpink")
+```
+
+# We can observe that every variable of interest has extreme outliers by viewing the variables of interest in our filtered dataset for 2013. There are outliers in variables like MTB, EPS, PE, inv, ROA, and ROE that are extremely distant from the IQR. Because of these outliers, the IQR is extremely difficult to visualize; it resembles bolded lines rather than a box. We can easily see that every variable in our data has extreme outliers by using the boxplot to visualize the data and observing that many of the points are located far from the IQR. 
+
+# Besides boxplots, we can also visualize the outliers of variables using some scatterplots
+```{r}
+plot(filtered_data1$size, filtered_data1$MTB, main="Scatterplot of Size against MTB", xlab="size", ylab="PE ratio", col = "hotpink")
+plot(filtered_data1$inv, filtered_data1$MTB, main="Scatterplot of Investment against MTB", xlab="inv", ylab="PE ratio", col = "hotpink")
+plot(filtered_data1$ROA, filtered_data1$MTB, main="Scatterplot of ROA against MTB", xlab="ROA", ylab="PE ratio", col = "hotpink")
+```
+# The scatterplot above shows specific variables plotted against MTB, and we can easily observe outliers for our variables of interest, which are positioned on the y-axis. The majority of the data points are concentrated in one location, but a few data points deviate from the cluster by the y-axis, indicating that they may be MTB outliers. There is always the possibility of an obvious extreme outlier for each variable (ROA, Inv, and size). Now that I've visualized the outliers, I'll use winsorizing to deal with them. This implies that values for a variable that fall between the 1% and 99% percentiles will be replaced with values that fall on the corresponding percentile.
+
+```{r}
+winsorizer <- function(data, vars, trim = 0.01) {
+  winsorize_var <- function(x, trim) {
+    quantiles <- quantile(x, probs = c(trim, 1 - trim), na.rm = TRUE)
+    x[x < quantiles[1]] <- quantiles[1]
+    x[x > quantiles[2]] <- quantiles[2]
+    return(x)
+  }
+  
+  for(var in vars) {
+    if(is.numeric(data[[var]])) {
+      data[[var]] <- winsorize_var(data[[var]], trim)
+    } else {
+      warning(paste("Variable", var, "is not numeric and won't be winsorized."))
+    }
+  }
+  
+  return(data)
+}
+```
+
+# Here a function for winsorizing has been created and now I am going to use this function and apply it to all of the variables that I would like to winsorize.
+
+```{r}
+winsorized_data2017 <- winsorizer(filtered_data1, c("MTB", "size", "EPS", "PE", "inv", "ROA", "ROE"))
+```
+
+# With Winsorizing done for the 2017 data, I can, then run the boxplot again to visualize how Winsorizing have reduced the effect of outliers on our dataset:
+
+```{r}
+boxplot(winsorized_data2017$MTB, main = "Boxplot of MTB", col = "cyan")
+boxplot(winsorized_data2017$size, main = "Boxplot of size", col = "cyan")
+boxplot(winsorized_data2017$EPS, main = "Boxplot of EPS", col = "cyan")
+boxplot(winsorized_data2017$PE, main = "Boxplot of PE", col = "cyan")
+boxplot(winsorized_data2017$inv, main = "Boxplot of inv", col = "cyan")
+boxplot(winsorized_data2017$ROA, main = "Boxplot of ROA", col = "cyan")
+boxplot(winsorized_data2017$ROE, main = "Boxplot of ROE", col = "cyan")
+```
+# We can plainly observe from the newly constructed boxplot that there have been significant advancements in the reduction of outliers for the 2017 data. In the previously constructed boxplots, the variables contained a large number of data points that were distant from the upper and lower borders, or the whiskers. Using the winsorizing method to eliminate the extreme outliers, our boxplot has been improved overall for all variables. demonstrated by the data's closer distance from the borders and a clearer IQR. Of course, certain data points in the boxplot are still regarded as outliers, as you may have seen, but this is because the boxplots employed a different technique to identify outliers than the Winsorizing method. Nevertheless, the boxplot technique effectively demonstrated how well were handled the outliers in the data by applying the Winsorizing technique.
+
+```{r}
+summary(winsorized_data2017)
+```
+# This is the new summry of the data after usingg the winsorizing method, and it is very noticable in the maximum and minimum values of the variables, since now most of them are quite lower/higher and closer to the median. 
+
+# Throughout the data cleaming process, there have been removed 214 missng values that were all located in the PE variable. For outliers however, they were not removed but instead were replaced using the Winsorizing method, which replaces values that is above or below the 99% confidence interval with the values at the 99% confidence interval. In the end, the data left us with 2126 observations.
+
+### Consider a linear model for MTB for the year 2017. Use the estimated model with data for 2018 as a test sample. Does the model perform as expected?
+
+# Before creating the linear model, we need to use either ROA or ROE because those two have quite high correlations and cause multicollinearity in the model, which is why in this case we are going to use ROA, annd then create another model with ROE.
+```{r}
+model_using_ROA <- lm(MTB ~ ROA + size + inv + PE, data = winsorized_data2017)
+summary(model_using_ROA)
+
+```
+# At first glance, this linear regression is not performing quite well. The p-value for the intercept would be above 0.05, so it would not be statistically significant. This means that the baseline Market-to-Book ratio—when all predictors are zero—is not different from zero in any statistically significant way. The overall model is statistically significant, but the low value of the Adjusted R-squared of 6.9% reflects that it only explains a small part of the variability in Market-to-Book ratio. This means that some other explanation of MTB exists, which this model fails to capture. In addition, from this regression output, predictors identified to be significant for MTB will be ROA and PE, while size also plays a role.
+
+```{r}
+test_data <- main_data %>%
+  filter(fyear == 2018, market_value > 1000) %>%
+  select(PE, size, inv, ROA, ROE, MTB) %>%
+  na.omit(PE)
+
+summary(test_data)
+```
+
+# Here I am creating the test data for the year 2018, and in addition I am again filtering values above 1000 for market value and omitting the missing values in PE. After this I am going to winsorize the outliers and then proceed to use it as a test data.
+
+```{r}
+winsorized_data2018 <- winsorizer(test_data, c("size", "inv", "ROA", "ROE", "MTB"))
+summary(winsorized_data2018)
+```
+
+```{r}
+library(caret)
+
+ROA_regression_prediction <- predict(model_using_ROA, newdata = winsorized_data2018)
+
+mseROA <-mean((winsorized_data2018$MTB - ROA_regression_prediction)^2)
+rmseROA <- sqrt(mseROA)
+maeROA <- mean(abs(winsorized_data2018$MTB - ROA_regression_prediction))
+rsquaredROA <- caret::R2(ROA_regression_prediction, winsorized_data2018$MTB)
+
+print(paste("Mean Squared Error (MSE):", mseROA))
+print(paste("Root Mean Squared Error (RMSE):", rmseROA))
+print(paste("Mean Absolute Error (MAE):", maeROA))
+print(paste("R-squared:", rsquaredROA))
+```
+# An MSE of 26.25 indicates that, on average, the squared difference between the actual MTB values and the predicted MTB values is 26.25. This value suggests that the model has some error in its predictions, and the magnitude of this error is squared to penalize larger errors more heavily. We can also see the RMSE of 5.12 indicates that the average error between the predicted and actual MTB values is about 5.12 units. RMSE is in the same units as the dependent variable, making it easier to interpret compared to MSE. Additionally, the R-squared value of 0.0881 indicates that only about 8.81% of the variability in MTB is explained by the model. This low R-squared value suggests that the model has limited explanatory power and that there are other factors influencing MTB that are not included in the model. The relatively high values of MSE and RMSE, along with the low R-squared, indicate that the model does not perform well in predicting MTB for the 2018 test data. The errors are substantial, and the model explains only a small portion of the variance in MTB.
+
+```{r}
+model_using_ROE <- lm(MTB ~ ROE + size + inv + PE, data = winsorized_data2017)
+summary(model_using_ROE)
+```
+
+# Using the ROE model to predict MTB results in significant improvements in model performance. The intercept is significant, so the baseline MTB (when all predictors are zero) is meaningful. ROE has an extremely significant, positive coefficient (16.10024), indicating that high ROE goes with high MTB. The variable size also exhibits a negative coefficient that is significant (-0.30146), thereby indicating that firms characterized by large sizes tend to exhibit lower MTB. The investment variable is not significant, thus indicating no substantial impact on MTB. All the same, the PE ratio stays highly significant and positively related to MTB at 1.86219. It has a low residual standard error of 4.515 and an adjusted R-squared of 0.4718, thus about 47.18% of the variance in MTB is explained by this model. The F-statistic is 475.6, highly significant, thus indicating that the overall model is statistically significant.
+
+```{r}
+ROE_regression_prediction <- predict(model_using_ROE, newdata = winsorized_data2018)
+
+mseROE <-mean((winsorized_data2018$MTB - ROE_regression_prediction)^2)
+rmseROE <- sqrt(mseROA)
+maeROE <- mean(abs(winsorized_data2018$MTB - ROE_regression_prediction))
+rsquaredROE <- caret::R2(ROE_regression_prediction, winsorized_data2018$MTB)
+
+print(paste("Mean Squared Error (MSE):", mseROE))
+print(paste("Root Mean Squared Error (RMSE):", rmseROE))
+print(paste("Mean Absolute Error (MAE):", maeROE))
+print(paste("R-squared:", rsquaredROE))
+```
+# The evaluation metrics for the ROE linear regression model using the 2018 test data indicate substantial prediction errors, with an MSE of 15.66, RMSE of 5.12, MAE of 2.015, and a low R-squared value of 0.50 (0.4996). These results suggest that the new model explains about 50% of the variability in MTB and has some prediction inaccuracies. When compared to the previous ROA model, which in comoparison exhibited a low R-squared value of 0.0881 on the test data, it becomes evident that the first model performs a bit more inadequately in terms of predictive power, in comparison to the ROE model. Despite the new model’s improved fit on the training data, both models fail to capture the underlying factors influencing MTB effectively.
+# This might be caused due to certain variables not having a linear relationship with the dependent variables, or there might be some other more complex relationships between the variables that need to be explored. In Case 2, me and my group when we created the linear regression, we decided to alter some of the variables in order for non-linear relationships to be captured by the model. 
+
+
+### Consider the various methods for dealing with outliers discussed in the case. Which of these methods seems to work best? Discuss both in-sample and out-of-sample results.
+## In-Sample Results
+# Winsorizing: This is the process whereby severe outliers are replaced by the values at 1st and 99th percentiles. As such, it reduces the impact of extreme values without the loss of any data points. In-sample results demonstrate that winsorizing significantly enhances the influence of outliers by returning more robust and improved summary statistics and better visualization, such as box plots. End.
+# Ranking: This is a method that transforms the data by ranking the values and then scaling these rankings between 0 and 1. Similar to the above method, this will also reduce the effect of outliers, but it will alter the original distribution and relationships within the data. Although the in-sample results may produce more stable models, ranked variables are not easily interpretable. Out of Sample Results
+
+## Out of Sample Results
+# Winsorizing: Out-of-sample results are at least more predictive in general than raw data. This technique will ensure that extreme values in the test data have a lesser impact on the predictions, increasing robustness and reliability. However, it always depends on the percentile cutoffs used and the nature of outliers.
+# Ranking: Out-of-sample results using ranked data can have less variance and greater generalization. However, it sometimes hides the strong relation that can lead to possible underperformance when the ranks do not represent the underlying distribution of the data very well. 
+
+# In conclusion among the discussed methods, winsorizing seems to work best in dealing with outliers in this case. It showcases an appropriate balance between the reduction of the effects of extreme values and the maintenance of the real distribution and relationships in the data. In-sample analysis shows improvements of the summary statistics and visualizations, while out-of-sample results indicate predictive performance and more robustness. Ranking, on the other hand, is relatively efficient in reducing the outlier influence but might make the interpretation of results cumbersome due to potential changes in the relationships of data variables. Therefore, in the case of this dataset and context, winsorizing will become the most preferred method of treating outliers.
+
+### Build a nonlinear model for MTB for 2017. Use the estimated model with data for 2018 as a test sample. Does the model perform as expected?
+# For this question I am going to create a k-NN model, because k-NN is a type of instance-based learning where the model makes predictions based on the closest training examples in the variable space. The decision boundaries created by k-NN are non-linear because they depend on the distribution and arrangement of the training data points.
+# Firstly, I will have to perform normalization to prepare it to be run by the knn model. The reason behind normalization is that normalization brings all of the predictor variables into the same scale, which means that they will have an equal effect on predicting the target variable PE using KNN.
+# Once again I am going to create two models, one using ROA and one using ROE.
+
+```{r}
+normalize <- function(x){
+  rng <- range(x,na.rm = TRUE)
+  (x - rng[1]) / (rng[2] - rng[1])
+}
+
+# normalizing for train data
+normalized_train <- winsorized_data2017 %>% 
+  mutate(     
+  ROA.mm = normalize(ROA),
+  ROE.mm = normalize(ROE),
+  size.mm = normalize(size),
+  inv.mm = normalize(inv),
+  PE.mm = normalize(PE)
+  ) %>%
+  select(MTB, PE.mm, ROA.mm, ROE.mm, size.mm, inv.mm)
+
+# normalizing for test data
+normalized_test <- winsorized_data2018 %>%
+  mutate(
+  ROA.mm = normalize(ROA),
+  ROE.mm = normalize(ROE),
+  size.mm = normalize(size),
+  inv.mm = normalize(inv),
+  PE.mm = normalize(PE)
+  ) %>%
+  select(MTB, PE.mm, ROA.mm, ROE.mm, size.mm, inv.mm)
+```
+
+```{r}
+
+library(caret)
+
+```
+
+### Model Creation using ROE
+```{r}
+# Define the train_control object
+train_control <- trainControl(method = "cv", number = 10)
+
+# Fit the k-NN model
+knn_fit <- train(MTB ~ size.mm + inv.mm + ROE.mm + PE.mm, 
+                 data = normalized_train, 
+                 method = "kknn", 
+                 trControl = train_control, 
+                 tuneLength = 10)
+
+# Print the model
+print(knn_fit)
+```
+# The k-Nearest Neighbors model was evaluated in 10-fold cross-validation over a dataset of 2126 × 4. To ensure proper tuning, one has to adjust the number of neighbors so that the model performs well. Distance metric and kernel function are fixed at 2 and "optimal", respectively. The model performance across a variety of kmax values; the best, which produced the lowest RMSE, was kmax = 7. Using this best model with the optimal kmax, I was able to obtain the following information, an RMSE of 4.107455, a r-squared of 0.572428, and a MAE of 1.819083. These results suggest that the model explains about 57.24% of variance in the dependent variable and that the average prediction error is about 1.82 units. The performance metrics suggest that the model is reasonably effective.
+
+# Now in order to fully evaluate the k-nn model, we need to visualize it and predictions on the test data will be generated and the model's performance will be assessed using different metrics.
+```{r}
+library(caret)
+
+# Predict on the test set
+knn_predictions <- predict(knn_fit, newdata = normalized_test)
+
+# Calculate MSE
+mse_value <- mean((normalized_test$MTB - knn_predictions)^2)
+
+# Calculate RMSE
+rmse_value <- sqrt(mse_value)
+
+# Calculate MAE
+mae_value <- mean(abs(normalized_test$MTB - knn_predictions))
+
+# Calculate R-squared
+r2_value <- caret::R2(knn_predictions, normalized_test$MTB)
+
+# Print the metrics
+cat("MSE:", mse_value, "\n")
+cat("RMSE:", rmse_value, "\n")
+cat("MAE:", mae_value, "\n")
+cat("R-squared:", r2_value, "\n")
+
+# Plot predictions vs actual values
+library(ggplot2)
+ggplot(normalized_test, aes(x = MTB, y = knn_predictions)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "Predicted vs Actual Values", x = "Actual MTB", y = "Predicted MTB") +
+  theme_minimal()
+
+
+```
+# It is within the reasonable predictive performance, evidenced by its R-squared value of 0.531937; hence, it explains about 53.19% of the variance in MTB. The RMSE and MAE are 5.04 and 3.88, respectively, indicating the amount, on average, that the model's predictions differ from the actual values. Scatterplot of predicted vs. actual values: This clearly shows that many of these observations are well-oriented with the diagonal line, though some points have large prediction errors. All in all, while the k-NN model does retain quite a meaningful part of MTB variability, there is still substantial scope for reducing prediction errors and increasing model accuracy
+
+### Model Creation using ROA
+
+```{r}
+# Define the train_control object
+train_control <- trainControl(method = "cv", number = 10)
+
+# Fit the k-NN model
+knn_fit1 <- train(MTB ~ size.mm + inv.mm + ROA.mm + PE.mm, 
+                 data = normalized_train, 
+                 method = "kknn", 
+                 trControl = train_control, 
+                 tuneLength = 10)
+
+# Print the model
+print(knn_fit1)
+```
+# Now, considering ROE as one of the predictors in the k-NN model tells us that the best possible model could provide an RMSE of 5.947625. This means that on average, the difference between the predicted and actual MTB values was approximately 5.95 units. The R-squared value of 0.10437791 means the model explains around 10.44% of MTB's variability. This suggests that there is reduced explanation power relative to the previous model. An MAE of 2.767237 means that, on average, the model is about 2.77 units off the real MTB values. The previous ROA model showed an RMSE of 5.036752 and an R-squared of 0.531937. The new model with ROE has a higher RMSE of 5.947625 and a lower R-squared of 0.10437791. These two pieces of evidence show that the previous model with ROA does a better job in terms of its predictive accuracy and power of explanation. For MAE, it was 3.87569 versus 2.767237 for the new model. Although the MAE is lower for the new model, the other two metrics—RMSE and R-squared—show overall better performance with ROA. 
+
+
+```{r}
+# Predict on the test set
+knn_predictions1 <- predict(knn_fit1, newdata = normalized_test)
+
+# Calculate MSE
+mse_value1 <- mean((normalized_test$MTB - knn_predictions1)^2)
+
+# Calculate RMSE
+rmse_value1 <- sqrt(mse_value)
+
+# Calculate MAE
+mae_value1 <- mean(abs(normalized_test$MTB - knn_predictions1))
+
+# Calculate R-squared
+r2_value1 <- caret::R2(knn_predictions1, normalized_test$MTB)
+
+# Print the metrics
+cat("MSE:", mse_value1, "\n")
+cat("RMSE:", rmse_value1, "\n")
+cat("MAE:", mae_value1, "\n")
+cat("R-squared:", r2_value1, "\n")
+
+# Plot predictions vs actual values
+ggplot(normalized_test, aes(x = MTB, y = knn_predictions)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "Predicted vs Actual Values", x = "Actual MTB", y = "Predicted MTB") +
+  theme_minimal()
+```
+# Running ROE as the predictor in the k-NN model, the Mean Squared Error comes out to be 27.69776, with a Root Mean Squared Error equal to 5.036752. While the Mean Absolute Error equals 2.793413, with an R-squared value of 0.07068924, what this means is that the average of the squared differences between actual and predicted MTB values is 27.70, and the standard deviation of the prediction errors is around 5.04 units. The mean of the observed MTB values from the predictions of the model is 2.79 units, and it accounts for approximately 7.07 percent of the variation in MTB. The scatter plot of predicted versus true values shows many values clustered along a diagonal line, which evinces fair performance for a significant proportion of data, even though there exist substantial deviations for some observations.
+
+# This model, with ROE as the predictor, gives higher MSE and lower R-squared compared to the previous model using ROA. Actually, the ROA model has an MSE of 26.24527 and an R-squared of 0.531937. As a result, this model has better accuracy in its prediction and a better explanatory power too. On the other hand, both models have the same RMSE, 5.036752, which means the same prediction error. The MAE of the ROE model is 2.793413, whereas that of the ROA model is 3.87569. The former also performed way better on the whole under ROA due to its considerably high R-squared value. It can be inferred that the ROA model explains more variation in MTB and thus bears more reliable predictions.
+
+# In summary, the k-NN model with ROA as a predictor outperforms the one with ROE, since it has lower MSE and much larger R-squared values. Thereby, one can prove that ROA is more strongly related to MTB and provides better predictive and explanatory power in this dataset. Thus, having ROA results in a more accurate and robust model; hence, it is the preferred predictor of MTB.
+
+
+
